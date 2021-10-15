@@ -1,3 +1,4 @@
+# sparse_haar/schemata.py
 import collections.abc as collections
 import torch
 
@@ -60,18 +61,18 @@ class Schema(dict):
         """
         Shifts all the inputs in this Schema up by n.
 
-
         When adding a Schema to another Schema, each Schema has on it
         the input lists for itself. However these must be increased so that
         later inputs are treated as later inputs and earlier inputs are treated
         as earlier inputs.
         """
-        for inputs_set in self.values():
-            # for each of the input sets in self.values
-            number = inputs_set.pop()
-            number += n
-            inputs_set.add(number)
-        """ WARNING! I DON'T SEE WHY THIS WORKS PROPERLY!"""
+        for key in self:
+            inputs_set = self[key]
+            new_set = set()
+            for elem in inputs_set:
+                elem += n
+                new_set.add(elem)
+            self[key] = new_set
         return
 
 
@@ -85,7 +86,7 @@ class SchemaConstructor:
         self.k_alphas = ALPHAS[:2*max_k + 1]
         return
 
-    def get_schema(self, js, dim_ks, dim_vs) -> Schema:
+    def get_schema(self, dim_js, dim_ks, dim_vs) -> Schema:
         """
         Returns, for dimension d, the Schema containing:
             - a jk word as the key for the given set of relevant inputs
@@ -103,27 +104,26 @@ class SchemaConstructor:
             in self.add_inputs
 
         """
-        words = self._get_words(js, dim_ks, dim_vs)
+        # breakpoint()
+        words = self._get_words(dim_js, dim_ks, dim_vs)
 
         # construct an empty Schema with these words
         schema = self._get_blank_schema(words)
 
         # now update the set of inputs corresponding to each key
-        for i in range(dim_ks.shape[1]):
-            this_input_words = self._get_words(js,
-                                               dim_ks[:, i].unsqueeze(1),
-                                               dim_vs[:, i].unsqueeze(1))
-            # you're not checking if it's in one or the other!
-            # get the corresponding keys for this input!
-            for word in this_input_words:
-                schema[word].add(i)  # this should handle the input_count
-                # i guess when updating a schema...
+        this_input_words = self._get_words(dim_js,
+                                           dim_ks,
+                                           dim_vs)
+        # you're not checking if it's in one or the other!
+        # get the corresponding keys for this input!
+        for word in this_input_words:
+            schema[word].add(0)
 
         return schema
 
     def _get_blank_schema(self, keys, arg=None):
         """
-        From a  set of keys, i.e. per-dim jk sybmol pairs,
+        From a  set of keys, i.e. per-dim jk symbol pairs,
         constructs a Schema and returns it.
 
         :param keys:
@@ -141,26 +141,27 @@ class SchemaConstructor:
                 dictionary[i] = set(arg)
         return dictionary
 
-    def _get_words(self, js, dim_ks, dim_vs) -> set:
+    def _get_words(self, dim_js, dim_ks, dim_vs) -> set:
         """
-        DOES NOT CURRENTLY INCLUDE THE VALUES
-        Produces the set of words for a given input whose js, ks and vs have
+        Returns a set of words for a given input whose js, ks and vs have
         been passed to the function.
 
-        The result is a set containing a string for index in this dimension's
-        matrix. The string is of the form jkv, where:
+        Returns; a set containing strings representing indices in matrix for d.
+        The string is of the form jk, where:
             - j is from the j_alphabet
             - k is from the k-alphabet
-            - v is from the values
         """
-
         # extend the set of js along the length of the input
-        extended_js = js.repeat_interleave(dim_ks.shape[1]).unsqueeze(1)
-        extended_ks = dim_ks.reshape([len(js) * dim_ks.shape[1], 1])
-        extended_vs = dim_vs.reshape([len(js) * dim_vs.shape[1], 1])
-        concat_jsksvs = torch.cat([extended_js,
-                                   extended_ks,
-                                   extended_vs], dim=1)
+        # extended_js = dim_js.repeat_interleave(dim_ks.shape[1]).unsqueeze(1)
+        """
+        extended_js = dim_js.reshape([dim_js.shape[0] * dim_ks.shape[0], 1])
+        extended_ks = dim_ks.reshape([dim_js.shape[0] * dim_ks.shape[0], 1])
+        extended_vs = dim_vs.reshape([dim_js.shape[0] * dim_vs.shape[0], 1])
+        """
+        # breakpoint()
+        concat_jsksvs = torch.cat([dim_js.unsqueeze(1),
+                                   dim_ks.unsqueeze(1),
+                                   dim_vs.unsqueeze(1)], dim=1)
 
         # prepare the set of words
         this_set = set()
@@ -179,6 +180,7 @@ class SchemaConstructor:
                 wordtext = j+k  # +v
                 this_set.add(wordtext)
 
+        # breakpoint()
         return this_set
 
 
@@ -194,7 +196,7 @@ class IndexConstructor:
         self.max_k = max_k
         self.dim = dim
 
-    def get_jkvs(self, x):
+    def get_jkvs(self, x):  # -> list(list())
         # I wil leave it with this structure so as to handle possible
         # processing
         ks, js, values = self._get_ks_js_values(x)
@@ -216,10 +218,14 @@ class IndexConstructor:
             - for j above max_j, the relevant k solving the inequality
                 is greater than the maximum k
         """
-
+        if x.shape != torch.Size([1, self.dim]):
+            raise ValueError("X should be of shape torch.Size([1, " +
+                             "{dim}]).".format(dim=self.dim) +
+                             " It is Currently of shape " +
+                             "{shape}".format(shape=x.shape))
         # acquire relevant js:
         # calculate the smallest j such that the value is 1, for each input
-        min_js = torch.floor(-torch.log2(x) - 1)  # [n, d]
+        min_js = torch.ceil(-torch.log2(x))  # [n, d]
 
         # calculate  the largest possible j given the k budget
         """
@@ -230,13 +236,25 @@ class IndexConstructor:
         """
         max_js = torch.floor(torch.log2((1 + self.max_k)/x))  # [n,d]
 
-        net_min_j = int(torch.min(min_js))  # the minimum max_j across all xs
-        net_max_j = int(torch.max(max_js))  # the maximum max_j across all xs
+        # net_min_j = torch.min(min_js, dim=0)[0]  # min min_j across all xs
+        # net_max_j = torch.max(max_js, dim=0)[0]  # max max_j across all xs
+
+        # breakpoint()
 
         # so js is the sequence from min_j to max_j
-        js = torch.linspace(net_min_j,
-                            net_max_j,
-                            (net_max_j - net_min_j + 1))
+        # we need a linspace of js for each input, I think?
+
+        js = []
+        for d in range(self.dim):
+            linspace = torch.linspace(int(min_js[0, d]),
+                                      int(max_js[0, d]),
+                                      int(max_js[0, d])
+                                      - int(min_js[0, d]) + 1)
+            js.append(linspace)
+            # js.append(torch.linspace(int(net_min_j[d]),
+            # int(net_max_j[d]),
+            # (int(net_max_j[d]) - int(net_min_j[d])
+            # + 1)))
 
         return js
 
@@ -246,26 +264,27 @@ class IndexConstructor:
         the input x. The js set is the minimum set of js required to capture
         the relevant information (i.e. from min_j to max_j)
         """
-        if (js.shape[0] != 0):  # save the js we have
-            self.js = js
-        else:
-            raise ValueError("The set of j-indices is empty")
+        return_ks = list()
+        return_vs = list()
+        for d in range(self.dim):
+            js2 = torch.pow(2, js[d]+1)
+            # js2 = torch.einsum('ij -> ji', js2)  # so [n, relevant_js]
+            # xview = torch.einsum('ijk->jik', x[d].repeat(1, js2.shape[0]))
+            # breakpoint()
+            # xview = x[:, d].repeat_interleave(1, js2.shape[1])
+            ks = torch.ceil(x[:, d] * js2)/2
 
-        js2 = torch.pow(2, js+1).repeat([self.dim, x.shape[0], 1])
-        js2 = torch.einsum('ijk -> jki', js2)  # so [n, relevant_js, d]
-        xview = torch.einsum('ijk->jik', x.repeat(js.shape[0], 1, 1))
+            final_values = torch.where(ks % 1 != 0,
+                                       torch.ones(ks.shape),
+                                       -torch.ones(ks.shape)).t()
 
-        ks = torch.einsum('ijk->jik', torch.ceil(xview * js2)/2)
-
-        values = torch.where(ks % 1 != 0,
-                             torch.ones(ks.shape),
-                             -torch.ones(ks.shape))
-
-        final_ks = torch.where(ks % 1 != 0,
-                               torch.floor(ks),
-                               ks - 1)
-
-        return final_ks, values  # [relevant_js, n, d]
+            final_ks = torch.where(ks % 1 != 0,
+                                   torch.floor(ks),
+                                   ks - 1).t()
+            return_ks.append(final_ks)
+            return_vs.append(final_values)
+        # breakpoint()
+        return return_ks, return_vs  # [relevant_js, n, d]
 
 
 class Schemata:
@@ -278,7 +297,7 @@ class Schemata:
         else:
             for d in range(dim):
                 self.schemata.append(Schema())
-        self.input_count = 0
+        self.input_count = 1
 
     def combine(self, new_schemata):
         """
@@ -295,7 +314,8 @@ class Schemata:
                 in the second dimension
         """
         base_schemata = self.schemata.copy()
-        # youi have to do something in here with relevant keys...
+
+        # get the common keys between the new input and the old ones
         for d, s in enumerate(base_schemata):
             relevant_keys = new_schemata.keys() & s.keys()
             # for key in relevant_keys:
@@ -309,6 +329,15 @@ class Schemata:
         # the new input
 
     def _forward_pass_intersect(schemata, d):
+        """
+        Method that, for a given dimension, (called starting from d=0),
+        intersection_updates the dictionaries in the next layer with this key's
+        dict.
+
+        The result is that the last layer contains the relevant inputs,
+        that can then be followed back through the graph to construct the
+        set of locations at which the inputs' values need to be added.
+        """
         for d_key in schemata[d]:
             for next_d_key in schemata[d+1]:
                 intersected_inputs = schemata[d+1][next_d_key]\
@@ -317,6 +346,9 @@ class Schemata:
                     schemata[d+1].pop(next_d_key)
                 else:
                     schemata[d+1][next_d_key] = intersected_inputs
+
+        # it is possible that then doing a similar backwards pass will find all
+        # relevant inputs and their locations
         return schemata
 
     def _check_input_set_union(self, schemata):
@@ -324,6 +356,8 @@ class Schemata:
         Tests whether the inputs that are in each dimension of a schemata are
         the same. This will be true when we have exhausted the  operation that
         intersections the sets in the first layer to the second layer, etc.
+
+        This will ONLY be true if the backwards pass has been completed as well
         """
         # first, get the union of the input sets across all the dimensions
         unions_set = set()
@@ -349,19 +383,9 @@ class Schemata:
         else:
             return False
 
-    def __getitem__(self, key):
-        return self.schemata[key]
-
-    def __setitem__(self, d, item):
-        self.schemata[d] = item
-        return
-
-    def __repr__(self):
-        return self.schemata.__repr__()
-
     def __add__(self, other):
         """
-        For each dimension, amalgamates teh incoming Schema of that dimension
+        For each dimension, amalgamates the incoming Schema of that dimension
         with the current Schema of this dimension. It is important that the
         inputs are all shifted up by the input count.
         """
@@ -374,7 +398,10 @@ class Schemata:
             other[d].shift_inputs(self.input_count)
             new_schemata[d] = self[d] + other[d]
 
-        self.input_count += other.get_input_count()
+        # self.input_count += other.get_input_count()
+        new_schemata.input_count = self.get_input_count()\
+            + other.get_input_count()
+        # breakpoint()
         return new_schemata
 
     def __eq__(self, other):
@@ -392,6 +419,16 @@ class Schemata:
     def set_input_count(self, n):
         self.input_count = n
 
+    def __getitem__(self, key):
+        return self.schemata[key]
+
+    def __setitem__(self, d, item):
+        self.schemata[d] = item
+        return
+
+    def __repr__(self):
+        return self.schemata.__repr__()
+
 
 class SchemataConstructor:
     def __init__(self, dim, max_j, max_k):
@@ -402,16 +439,20 @@ class SchemataConstructor:
 
     def get_schemata(self, x) -> Schemata:
         """
-        Returns a Schemata object, with Schemata corresponding to the inputs
-        passed in. It should naturally handle long inputs.
+        ∀ d, for a given single input point x, produces a Schemata containing
+        the words and an input.
+
+        See behaviour of Schemata.__add__() to understand how it will then work
         """
         js, ks, vs = self.index_constructor.get_jkvs(x)
         schemata = Schemata(self.dim)
         input_count = x.shape[0]
+        # breakpoint()
         for d in range(self.dim):
-            dim_ks = ks[:, :, d]
-            dim_vs = vs[:, :, d]
-            schema = self.schema_constructor.get_schema(js, dim_ks, dim_vs)
+            dim_js = js[d]
+            dim_ks = ks[d]
+            dim_vs = vs[d]
+            schema = self.schema_constructor.get_schema(dim_js, dim_ks, dim_vs)
             schemata[d] = schema
         schemata.set_input_count(input_count)
 

@@ -17,7 +17,6 @@ class Christ(list):
             return new_list
 
 
-
 class SparseHaarEstimate:
     def __init__(self,
                  dim,
@@ -80,7 +79,7 @@ class SparseHaarEstimate:
 
             # get the common keys between the new input and the extant inputs
             common_keys = new_schema.keys() & old_schema.keys()
-            redundant_set = set(range(self.input_count))
+            # redundant_set = set(range(self.input_count))
             common_inputs = old_schema[common_keys]
 
             # remove the all-input keys, as they are redundant for the next
@@ -296,11 +295,11 @@ if __name__ == "__main__":
                       #  [0.23, 6.88],
                       #  [0.23, 0.24],
                       [5.6, 8.32]])
-    x1 = torch.Tensor([[0.23, 0.23]])
+    x1 = torch.Tensor([[0.23, 0.43]])
     x2 = torch.Tensor([[0.23, 0.26]])
     #  x3 = torch.Tensor([[0.23, 0.23]])
-    x = torch.Tensor([[0.23, 0.23],
-                      [0.23, 0.26]])
+    x = torch.Tensor([[0.23, 0.29],
+                      [0.25, 0.29]])
     dim = 2
     max_j = 20
     max_k = 20
@@ -308,18 +307,18 @@ if __name__ == "__main__":
     estimate_2 = SparseHaarEstimate(dim, max_j, max_k)
 
     print("About to add the inputs")
-    estimate.add_inputs(x1)
+    #    estimate.add_inputs(x1)
     estimate.add_inputs(x2)
-    estimate_2.add_inputs(x)
+    # estimate_2.add_inputs(x)
     # estimate.check_input(x3)
-    #estimate.add_inputs(y)
+    # estimate.add_inputs(y)
     final_schemata = estimate.schemata
     final_schemata2 = estimate_2.schemata
     for diction in final_schemata:
         print("Next dict:")
         print_dict(diction)
 
-    for diction in final_schemata2:
-        print("Next dict:")
-        print_dict(diction)
+    # for diction in final_schemata2:
+    #    print("Next dict:")
+    #    print_dict(diction)
     breakpoint()
