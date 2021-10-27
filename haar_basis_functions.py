@@ -41,7 +41,6 @@ def plot_matrix(matrix, interval, show=True, this_marker='+'):
 def get_matrix(x, max_j, max_k):
     my_basis = HaarWaveletBasis(max_j, max_k)
     results = torch.sign(my_basis(x))
-
     return results
 
 
@@ -365,10 +364,10 @@ if __name__ == "__main__":
 
     if draw_diagram:
         z = torch.linspace(-20, 40, 1000)
-        x = 1.234
-        y = 0.8
-        z = 2.468
-        a = 0.5
+        x = 0.23
+        y = 0.26
+        z = 0.23
+        a = 0.23
         k = 1
         j = 1
 

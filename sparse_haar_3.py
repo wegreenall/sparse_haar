@@ -2,7 +2,9 @@
 import torch
 import collections
 from framework.utils import print_dict
-from schemata import Schema, Schemata, SchemaConstructor, IndexConstructor
+from sparse_haar.schemata import Schema, Schemata, SchemaConstructor, SchemataConstructor,\
+            IndexConstructor
+from framework.haar_basis_functions import HaarWaveletBasis
 
 ALPHAS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvxyz"\
     + "!£$%^&*()"
@@ -21,14 +23,15 @@ class SparseHaarEstimate:
     def __init__(self,
                  dim,
                  max_j,
-                 max_k):
+                 max_k,
+                 basis):
 
         self.dim = dim
 
         # alphabets
-        self.j_alphas = ALPHAS[:2*max_j + 1]
-        self.k_alphas = ALPHAS[:2*max_k + 1]
-        breakpoint()
+        self.j_alphas = ALPHAS[:2*max_j + 2]
+        self.k_alphas = ALPHAS[:2*max_k + 2]
+        # breakpoint()
         # maximum indices
         self.max_j = max_j
         self.max_k = max_k
@@ -37,58 +40,21 @@ class SparseHaarEstimate:
 
         self.word_sets = []  # this will expand in the N dimension
 
-        # self.schemata = []
-        # for i in range(self.dim):
-        #    self.schemata.append(dict())
-        #    # initialise the sets
-        self.schemata = Schemata(self.dim)
+        # initialise the Schemata for storing the data
+        self.schemata_constructor = SchemataConstructor(dim,
+                                                        max_j,
+                                                        max_k)
 
-        self.commons = []
+        # factories
+        self.schema_constructor = SchemaConstructor(dim, max_j, max_k)
+        self.commons = Schema()
 
-        self.index_constructor = IndexConstructor(dim, max_j, max_k)
-
+        self.basis = basis
+        self.x = torch.Tensor([])
         return
 
     def get_input_indices(self):
         return self.word_sets
-
-    def check_input(self, x):
-        """
-        Takes an input and checks whether it has any common locations with the
-        other inputs so far.
-
-        Steps:
-            - take common keys between the new input and the extant inputs
-            - union the relevant sets with in each dimension
-            - intersection across dimensions
-        the resulting set contains the index of each input that matches with
-        the new input in some location
-
-        Returns:
-            - set of inputs that have coincidence
-            - the locations at which they coincide
-
-        """
-        # get the set of keys for the new input
-        js, ks, vs = self.index_constructor.get_jkvs(x)  # ??
-
-        for d in range(self.dim):
-            # select appropriate indices for this dimension
-            new_schema = self._get_schema(js, ks[:, :, d], vs[:, :, d])
-            old_schema = self.schemata[d]
-
-            # get the common keys between the new input and the extant inputs
-            common_keys = new_schema.keys() & old_schema.keys()
-            # redundant_set = set(range(self.input_count))
-            common_inputs = old_schema[common_keys]
-
-            # remove the all-input keys, as they are redundant for the next
-            # calculation
-            joint_set = set()
-            for i in common_inputs:
-                joint_set = joint_set.union(i)
-
-            breakpoint()
 
     def add_inputs(self, x):
         """
@@ -106,173 +72,99 @@ class SparseHaarEstimate:
             raise RuntimeError("The dimension of the input must match that " +
                                "of the estimate. Current estimate dim: " +
                                " {} ".format(self.dim))
+        # add the data - this should be a different thing
+        self.x = torch.cat((self.x, x))
 
-        js, ks, vs = self.index_constructor.get_jkvs(x)  # ??
-        breakpoint()
-        # initialise the set to calculate the common inputs
-        # now build A∪B and A∩B
-        for d in range(self.dim):
-            dim_ks = ks[:, :, d]
-            dim_vs = vs[:, :, d]
-            old_schema = self.schemata[d]
-            new_schema = self._get_schema(js, dim_ks, dim_vs)
-            self.schemata[d] = self._update_schema(old_schema,
-                                                   new_schema)
-            print(new_schema)
-            common_values = set()
-            common_keys = new_schema.keys() & old_schema.keys()
-            for key in common_keys:
-                common_values = common_values.union(old_schema[key])
-            print("common set", common_values, "dimension", d)
-        # self.schemata now contains AUB where A is the original schema, and B
-        # is the schema from the new one
-        # we also have to get the
+        # process the new input to get the two components
+        new_schemata = self.schemata_constructor.get_schemata(x)
 
-        # how do we build A∩B?
-        """
-        # step 1
-        for i in range(x.shape[0]):
-            ks, js, values = self.index_constructor.get_jkvs(x[i, :])
-            this_word_sets = []
-            for d in range(self.dim):
-                dim_ks = ks[:, :, d]
-                dim_vs = values[:, :, d]
+        if self.input_count == 0:
+            self.schemata = new_schemata
+        else:
+            # add the new input; the set component
+            self.schemata = self.schemata + new_schemata
+            new_commons = self.schemata.combine(new_schemata)
 
-                words = self._get_words(js, dim_ks, dim_vs)
-                breakpoint()
-                print("i and words are:", i, words)
-                this_word_sets.append(words)
-            self.word_sets.append(this_word_sets)
-        """
-        # step 2
+            # store the common locations; the powerset component
+            self.commons = self.commons + new_commons
+
+        # increment the thing.
         self.input_count += x.shape[0]
-
         return
 
-    def _update_schema(self, old_schema, new_schema) -> Schema:
+    def get_kronecker(self):
         """
-        Accepts an Schema, and js and ks from a new input.
-
-        Returns a new Schema, with the keys from both new and old, and
-        updates the sets containing relevant inputs.
-
-        The final Schema contains keys as index locations in the form of words,
-        and values as sets of relevant inputs
+        Returns the Kronecker product matrix for the current data. It will
+        do this by using separately the 'orthogonal' aspects of the data repre-
+        sentation.
         """
-        # temp_net_min_j = self.net_min_j  # this will only differ when the new
-        # new_net_min_j = int(min(js).item())
+        inputs_set = set(range(self.input_count))
+        kronecker = self._build_kronecker(set(range(self.input_count)))
+        return kronecker
 
-        # input comes in, for all dimensions - once processing beyond the
-        # zero-th, to the d-th dimension, this will be zero. However we are
-        # fixing the dth dimension IF this is not zero...
+    def get_schemata(self):
+        return self.schemata
 
-        # get the new schema for the inputs
-
-        temp_old_schema = old_schema.copy()
-        # breakpoint()
-        # if this is a new input, then use just the new_schema
-        if len(old_schema) == 0:
-            print("This time, just pulling in the new schema!")
-            final_schema = new_schema.copy()
-        else:
-            final_schema = temp_old_schema + new_schema
-
-        return final_schema
-
-    def _get_schema(self, js, dim_ks, dim_vs) -> Schema:
+    def _build_kronecker(self,
+                         last_inputs,
+                         d=0):
         """
-        Returns, for dimension d, the Schema containing:
-            - a jk word as the key for the given set of relevant inputs
-            - a list with the indices of the input relevant for the given js
-              and ks
+        Builds the basic Kronecker product recursively.
+        This part of the process builds up the Kronecker product matrix in a
+        depth-first formulation.
 
-        :param js:
-            the js that are relevant to be stored (i.e. not redundantly all 1s
-            for k = 0
-        :param dim_ks:
-            the ks for a given dimension for a given set of inputs - built in
-            self.add_inputs
-        :param dim_vs:
-            the valuess for a given dimension for a given set of inputs - build
-            in self.add_inputs
+        For each key in the first dimension, it places a matrix that is built
+        from the relevant keys in the next dimension. As it goes down the tree,
+        it will first build the matrix for the "first" index in each of the
+        levels.
 
+        The matrix in any given level is built as an appropriately sized matrix
+        of zeros, and then each relevant input's contribution is added (i.e.
+        with the summation operator) to this tensor of zeros.
+
+        Since if there are overlapping locations in a given matrix, this means
+        that the product and summation steps are in the wrong order. For this
+        reason, we store separately the locations that hve summation so that
+        they can be calculated separately.
+
+        It now appears this may not be the case and I am wrong... need to check
+        this!
         """
-        words = self._get_words(js, dim_ks, dim_vs)
+        # prepare an empty tensor
+        full_dim = self.dim
 
-        # construct an empty Schema with these words
-        schema = self._get_blank_schema(words)
+        # matrix sizes
+        matrix_width = (2 * self.max_j + 1) ** (full_dim - d)
+        matrix_height = (2 * self.max_k + 1) ** (full_dim - d)
+        nm_width = (2 * self.max_j + 1) ** (full_dim - d - 1)
+        nm_height = (2 * self.max_k + 1) ** (full_dim - d - 1)
+        this_tensor = torch.zeros(matrix_width, matrix_height)
 
-        # now update the set of inputs corresponding to each key
-        for i in range(dim_ks.shape[1]):
-            this_input_words = self._get_words(js,
-                                               dim_ks[:, i].unsqueeze(1),
-                                               dim_vs[:, i].unsqueeze(1))
-            # you're not checking if it's in one or the other!
-            # get the corresponding keys for this input!
-            for word in this_input_words:
-                schema[word].add(i + self.input_count)
-        # breakpoint()
-        return schema
+        # for each key in this dimension, build a matrix
+        for key in self.schemata[d]:
+            j = self.j_alphas.index(key[0])
+            k = self.k_alphas.index(key[1])
+            inputs = self.schemata[d][key].intersection(last_inputs)
 
-    def _get_blank_schema(self, keys, arg=None):
-        """
-        From a  set of keys, i.e. per-dim jk sybmol pairs,
-        constructs a Schema and returns it.
+            for index in inputs:
+                if d == full_dim - 1:
+                    this_tensor[j, k] += self.basis(self.x[index, d],
+                                                    j-self.max_j,
+                                                    k-self.max_k)
+                else:
+                    try:
+                        result = self._build_kronecker({index}, d=d+1)
+                        this_tensor[(j * nm_width):((j + 1) * nm_width),
+                                    (k * nm_height):((k + 1) * nm_height)] +=\
+                                self.basis(self.x[index, d], j-self.max_j,
+                                           k-self.max_k) * result
 
-        :param keys:
-            an iterable containing relevant keys for building the Schema
-        :param arg:
-            allows one to fill the blank Schema's sets with some specific
-            object
-        """
-        dictionary = Schema().fromkeys(keys)
-        if arg is None:
-            for i in dictionary.keys():
-                dictionary[i] = set()
-        else:
-            for i in dictionary.keys():
-                dictionary[i] = set(arg)
-        return dictionary
 
-    def _get_words(self, js, dim_ks, dim_vs) -> set:
-        """
-        DOES NOT CURRENTLY INCLUDE THE VALUES
-        Produces the set of words for a given input whose js, ks and vs have
-        been passed to the function.
+                    except IndexError:
+                        print("IndexError!")
+                        breakpoint()
 
-        The result is a set containing a string for index in this dimension's
-        matrix. The string is of the form jkv, where:
-            - j is from the j_alphabet
-            - k is from the k-alphabet
-            - v is from the values
-        """
-
-        # extend the set of js along the length of the input
-        extended_js = js.repeat_interleave(dim_ks.shape[1]).unsqueeze(1)
-        extended_ks = dim_ks.reshape([len(js) * dim_ks.shape[1], 1])
-        extended_vs = dim_vs.reshape([len(js) * dim_vs.shape[1], 1])
-        concat_jsksvs = torch.cat([extended_js,
-                                   extended_ks,
-                                   extended_vs], dim=1)
-
-        # prepare the set of words
-        this_set = set()
-
-        for word in concat_jsksvs[:]:
-            j_index = int(word[0] + self.max_j)
-            k_index = int(word[1] + self.max_k)
-            if k_index < 2*self.max_k+1:
-                try:
-                    j = self.j_alphas[j_index]
-                    k = self.k_alphas[k_index]
-                except IndexError:
-                    print("Index error!")
-                    breakpoint()
-                #  v = str(int(0 * (word[2] > 0) + 1 * (word[2] < 0)))
-                wordtext = j+k  # +v
-                this_set.add(wordtext)
-
-        return this_set
+        return this_tensor
 
 
 if __name__ == "__main__":

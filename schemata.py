@@ -8,6 +8,12 @@ ALPHAS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvxyz"\
 
 
 class Schema(dict):
+    """
+    A Schema is a dict-like object that has a key:value pair structure.
+    However, the value part is always a set, and addition has a special
+    meaning - union sets for common keys, and  append new keys and their
+    values.
+    """
     def __init__(self, init=None):
         if init is not None:
             super().__init__(init)
@@ -16,31 +22,54 @@ class Schema(dict):
 
     def __add__(self, other):
         """
+        Addition is defined as:
+            - if the key is the same as a key already existing, union
+            the new inputs with the current
+            inputs
+            - if the key is not the same as a key already existing,
+            store the new inputs
+
         Implementing the add function allows us to specify that the result
         of adding a new input is to add the sets for the correpsonding
         js and ks with that input
         """
-        this_dict = self.copy()
+        # this_dict = self.copy()
+        new_dict = Schema(self)
         if not isinstance(other, dict):
             raise TypeError("The second operand should be a subclass of a" +
                             "dictionary")
 
         # amalgamate common keys
         for key in self.keys() & other.keys():
-            if isinstance(this_dict[key], set):
+            if isinstance(new_dict[key], set):
                 # this_dict[key] = this_dict[key].extend(other[key])
-                intermediate_set = this_dict[key]
+                intermediate_set = new_dict[key].copy()
                 intermediate_set.update(other[key])
-                this_dict[key] = intermediate_set
+                new_dict[key] = intermediate_set
             else:
                 raise TypeError("The elements in the Schemata should be lists")
 
         # append new keys and their values
-        for key in other.keys() - this_dict.keys():
-            # the set of keys that are in the other keys and not in self
-            this_dict[key] = other[key]
+        if len(new_dict.keys()) > 0:
+            for key in other.keys() - new_dict.keys():
+                # the set of keys that are in the other keys and not in self
+                try:
+                    new_dict[key] = other[key]
+                except TypeError:
+                    print("Hello!")
+                    breakpoint()
 
-        return this_dict
+        return new_dict
+
+    def intersection(self, other):
+        """
+        Returns a schema that is a copy of the current schema, but with only
+        keys common to the other schema included.
+        """
+        new_schema = Schema()  # an empty Schema
+        for key in self.keys() & other.keys():
+            new_schema[key] = self[key]
+        return new_schema
 
     def __getitem__(self, key):
         if isinstance(key, list)\
@@ -59,21 +88,22 @@ class Schema(dict):
 
     def shift_inputs(self, n):
         """
-        Shifts all the inputs in this Schema up by n.
+        Shifts all the inputs in this Schema up by n, and returns a copy.
 
         When adding a Schema to another Schema, each Schema has on it
         the input lists for itself. However these must be increased so that
         later inputs are treated as later inputs and earlier inputs are treated
         as earlier inputs.
         """
-        for key in self:
-            inputs_set = self[key]
+        new_schema = self.copy()
+        for key in new_schema:
+            inputs_set = new_schema[key]
             new_set = set()
             for elem in inputs_set:
                 elem += n
                 new_set.add(elem)
-            self[key] = new_set
-        return
+            new_schema[key] = new_set
+        return new_schema
 
 
 class SchemaConstructor:
@@ -104,7 +134,6 @@ class SchemaConstructor:
             in self.add_inputs
 
         """
-        # breakpoint()
         words = self._get_words(dim_js, dim_ks, dim_vs)
 
         # construct an empty Schema with these words
@@ -158,7 +187,6 @@ class SchemaConstructor:
         extended_ks = dim_ks.reshape([dim_js.shape[0] * dim_ks.shape[0], 1])
         extended_vs = dim_vs.reshape([dim_js.shape[0] * dim_vs.shape[0], 1])
         """
-        # breakpoint()
         concat_jsksvs = torch.cat([dim_js.unsqueeze(1),
                                    dim_ks.unsqueeze(1),
                                    dim_vs.unsqueeze(1)], dim=1)
@@ -180,7 +208,6 @@ class SchemaConstructor:
                 wordtext = j+k  # +v
                 this_set.add(wordtext)
 
-        # breakpoint()
         return this_set
 
 
@@ -225,7 +252,10 @@ class IndexConstructor:
                              "{shape}".format(shape=x.shape))
         # acquire relevant js:
         # calculate the smallest j such that the value is 1, for each input
-        min_js = torch.ceil(-torch.log2(x))  # [n, d]
+        """
+        The following is from storing only up to min_relevant_j.
+        """
+        # # min_js = torch.ceil(-torch.log2(x))  # [n, d]
 
         # calculate  the largest possible j given the k budget
         """
@@ -239,17 +269,24 @@ class IndexConstructor:
         # net_min_j = torch.min(min_js, dim=0)[0]  # min min_j across all xs
         # net_max_j = torch.max(max_js, dim=0)[0]  # max max_j across all xs
 
-        # breakpoint()
-
         # so js is the sequence from min_j to max_j
         # we need a linspace of js for each input, I think?
 
         js = []
         for d in range(self.dim):
+            """
+            The following is from storing only up to min_relevant_j.
+            """
+            """
             linspace = torch.linspace(int(min_js[0, d]),
                                       int(max_js[0, d]),
                                       int(max_js[0, d])
                                       - int(min_js[0, d]) + 1)
+            """
+            linspace = torch.linspace(int(-self.max_j),
+                                      int(max_js[0, d]),
+                                      int(max_js[0, d])
+                                      - int(-self.max_j) + 1)
             js.append(linspace)
             # js.append(torch.linspace(int(net_min_j[d]),
             # int(net_max_j[d]),
@@ -270,7 +307,6 @@ class IndexConstructor:
             js2 = torch.pow(2, js[d]+1)
             # js2 = torch.einsum('ij -> ji', js2)  # so [n, relevant_js]
             # xview = torch.einsum('ijk->jik', x[d].repeat(1, js2.shape[0]))
-            # breakpoint()
             # xview = x[:, d].repeat_interleave(1, js2.shape[1])
             ks = torch.ceil(x[:, d] * js2)/2
 
@@ -283,7 +319,6 @@ class IndexConstructor:
                                    ks - 1).t()
             return_ks.append(final_ks)
             return_vs.append(final_values)
-        # breakpoint()
         return return_ks, return_vs  # [relevant_js, n, d]
 
 
@@ -299,7 +334,7 @@ class Schemata:
                 self.schemata.append(Schema())
         self.input_count = 1
 
-    def combine(self, new_schemata):
+    def combine(self, new_schemata) -> Schema:
         """
         For a new schema, will calculate the locations at which common indices
         exist - and so the values must be added.
@@ -313,22 +348,23 @@ class Schemata:
                 between the key-relevant inputs and the inputs for each key
                 in the second dimension
         """
-        base_schemata = self.schemata.copy()
+
+        # base_schemata = self.copy()
 
         # get the common keys between the new input and the old ones
-        for d, s in enumerate(base_schemata):
-            relevant_keys = new_schemata.keys() & s.keys()
-            # for key in relevant_keys:
+        common_schemata = self.intersection(new_schemata)
+        js, ks, inputs = self._get_layer_list(common_schemata)
 
-        d = 0
-        while (not self._check_input_set_union(base_schemata))\
-                and d < self.dim-1:
-            base_schemata = self._forward_pass_intersect(base_schemata, d)
-            d += 1
-        # now base_schemata contains the keys and inputs that are connected to
-        # the new input
+        for final_input in inputs:
+            final_input.add(self.input_count)
+        keys = zip(js, ks)
+        final_schema = Schema()
+        for i, key in enumerate(keys):
+            final_schema[key] = inputs[i]
 
-    def _forward_pass_intersect(schemata, d):
+        return final_schema
+
+    def _get_layer_list(self, common_schemata, d=0):
         """
         Method that, for a given dimension, (called starting from d=0),
         intersection_updates the dictionaries in the next layer with this key's
@@ -338,10 +374,41 @@ class Schemata:
         that can then be followed back through the graph to construct the
         set of locations at which the inputs' values need to be added.
         """
+        # some kind of check if it is the last layer...
+        js = []
+        ks = []
+        inputs = []
+        if d == (self.dim - 1):
+            for key in common_schemata[d].keys():
+                # inputs.append(update(schemata[d][key]))
+                js.append(key[0])
+                ks.append(key[1])
+                inputs.append(common_schemata[d][key])
+        else:
+            next_layer_js,\
+                next_layer_ks,\
+                next_layer_inputs = self._get_layer_list(common_schemata, d+1)
+            for key in common_schemata[d].keys():
+                this_input = common_schemata[d][key]
+
+                # get the js from the next layers
+                this_j, this_k = key[0], key[1]
+                these_js = [this_j + next_j for next_j in next_layer_js]
+                these_ks = [this_k + next_k for next_k in next_layer_ks]
+                these_inputs = [this_input.intersection(next_input) for
+                                next_input in
+                                next_layer_inputs]
+                js.extend(these_js)
+                ks.extend(these_ks)
+                inputs.extend(these_inputs)
+        return js, ks, inputs
+
+    """
+    def _forward_pass_intersect(schemata, d):
         for d_key in schemata[d]:
             for next_d_key in schemata[d+1]:
-                intersected_inputs = schemata[d+1][next_d_key]\
-                    .intersection(schemata[d][d_key])
+                intersected_inputs = schemata[d][d_key]\
+                    .intersection(schemata[d+1][next_d_key])
                 if len(intersected_inputs) == 0:
                     schemata[d+1].pop(next_d_key)
                 else:
@@ -352,13 +419,13 @@ class Schemata:
         return schemata
 
     def _check_input_set_union(self, schemata):
-        """
+
         Tests whether the inputs that are in each dimension of a schemata are
         the same. This will be true when we have exhausted the  operation that
         intersections the sets in the first layer to the second layer, etc.
 
         This will ONLY be true if the backwards pass has been completed as well
-        """
+       "
         # first, get the union of the input sets across all the dimensions
         unions_set = set()
 
@@ -383,6 +450,7 @@ class Schemata:
         else:
             return False
 
+    """
     def __add__(self, other):
         """
         For each dimension, amalgamates the incoming Schema of that dimension
@@ -395,13 +463,13 @@ class Schemata:
         new_schemata = Schemata(self.dim)
 
         for d in range(self.dim):
-            other[d].shift_inputs(self.input_count)
-            new_schemata[d] = self[d] + other[d]
+            shifted_other = other[d].shift_inputs(self.input_count)
+            new_schemata[d] = self[d].copy() + shifted_other.copy()
 
         # self.input_count += other.get_input_count()
         new_schemata.input_count = self.get_input_count()\
             + other.get_input_count()
-        # breakpoint()
+
         return new_schemata
 
     def __eq__(self, other):
@@ -429,6 +497,12 @@ class Schemata:
     def __repr__(self):
         return self.schemata.__repr__()
 
+    def intersection(self, other):
+        new_schemata = Schemata(self.dim)
+        for d, (this_schema, other_schema) in enumerate(zip(self, other)):
+            new_schemata[d] = this_schema.intersection(other_schema)
+        return new_schemata
+
 
 class SchemataConstructor:
     def __init__(self, dim, max_j, max_k):
@@ -444,16 +518,23 @@ class SchemataConstructor:
 
         See behaviour of Schemata.__add__() to understand how it will then work
         """
+        input_count = x.shape[0]
+        first_input = x[0, :]
+        base_schemata = self._get_single_schemata(first_input.unsqueeze(0))
+        for single_input in x[1:]:
+            base_schemata = base_schemata +\
+                self._get_single_schemata(single_input.unsqueeze(0))
+        # base_schemata.set_input_count(input_count)
+
+        return base_schemata
+
+    def _get_single_schemata(self, x) -> Schemata:
         js, ks, vs = self.index_constructor.get_jkvs(x)
         schemata = Schemata(self.dim)
-        input_count = x.shape[0]
-        # breakpoint()
         for d in range(self.dim):
             dim_js = js[d]
             dim_ks = ks[d]
             dim_vs = vs[d]
             schema = self.schema_constructor.get_schema(dim_js, dim_ks, dim_vs)
             schemata[d] = schema
-        schemata.set_input_count(input_count)
-
         return schemata
