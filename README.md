@@ -1,2 +1,2 @@
 # sparse_haar
-A library for storing and operating on sparse Haar matrices, for my Gaussian Cox Process project
+A library for using Haar bases, for my Gaussian Cox Process project
